@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "FlashTalk",
+    "slug": "flash-talk",
+    "version": "1.0.0",
+    "scheme": "flashtalk",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "ios": {
+      "bundleIdentifier": "com.flashtalk.app"
+    },
+    "android": {
+      "package": "com.flashtalk.app"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-asset"
+    ]
+  }
+}
