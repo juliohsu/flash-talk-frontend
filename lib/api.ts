@@ -1,6 +1,8 @@
+import Constants from "expo-constants";
 import { getToken } from "./auth";
 
-const API_URL = "http://localhost:3000";
+const devHost = Constants.expoConfig?.hostUri?.split(":")[0] ?? "localhost";
+const API_URL = `http://${devHost}:3000`;
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await getToken();
