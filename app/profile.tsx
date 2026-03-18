@@ -73,7 +73,7 @@ export default function ProfileScreen() {
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color="#000" />
       </View>
     );
   }
@@ -101,13 +101,13 @@ export default function ProfileScreen() {
               <View style={styles.userRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontWeight: "500", fontSize: 15 }}>{u.name}</Text>
-                  <Text style={{ color: "#6b7280", fontSize: 13 }}>
+                  <Text style={{ color: "#555", fontSize: 13 }}>
                     {u.email} · {u.role}
                   </Text>
                 </View>
                 {u.id !== currentId && (
                   <TouchableOpacity onPress={() => handleDeleteUser(u.id)}>
-                    <Text style={{ color: "#ef4444", fontSize: 13 }}>Delete</Text>
+                    <Text style={{ color: "#333", fontSize: 13 }}>Delete</Text>
                   </TouchableOpacity>
                 )}
               </View>

@@ -154,7 +154,7 @@ export default function RoomsScreen() {
         <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
           {isJoined ? (
             <TouchableOpacity
-              style={[styles.btn, { backgroundColor: "#16a34a" }]}
+              style={[styles.btn, { backgroundColor: "#333" }]}
               onPress={() => router.push(`/rooms/${room.id}`)}
             >
               <Text style={styles.btnText}>Open</Text>
@@ -169,7 +169,7 @@ export default function RoomsScreen() {
           )}
           {isMine && (
             <TouchableOpacity onPress={() => handleDelete(room.id)}>
-              <Text style={{ color: "#ef4444", fontSize: 13 }}>Delete</Text>
+              <Text style={{ color: "#333", fontSize: 13 }}>Delete</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -186,10 +186,10 @@ export default function RoomsScreen() {
         </TouchableOpacity>
         <View style={{ flexDirection: "row", gap: 8 }}>
           <TouchableOpacity onPress={() => router.push("/profile")}>
-            <Text style={{ color: "#4f46e5", fontWeight: "600" }}>Profile</Text>
+            <Text style={{ color: "#000", fontWeight: "600" }}>Profile</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={handleLogout}>
-            <Text style={{ color: "#ef4444", fontWeight: "600" }}>Logout</Text>
+            <Text style={{ color: "#333", fontWeight: "600" }}>Logout</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -210,7 +210,7 @@ export default function RoomsScreen() {
       </View>
 
       {loading ? (
-        <ActivityIndicator size="large" color="#4f46e5" style={{ marginTop: 40 }} />
+        <ActivityIndicator size="large" color="#000" style={{ marginTop: 40 }} />
       ) : (
         <FlatList
           data={displayRooms}
@@ -244,7 +244,7 @@ export default function RoomsScreen() {
               placeholderTextColor="#9ca3af"
             />
             <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 16, gap: 8 }}>
-              <Switch value={newPrivate} onValueChange={setNewPrivate} trackColor={{ true: "#4f46e5" }} />
+              <Switch value={newPrivate} onValueChange={setNewPrivate} trackColor={{ true: "#000" }} />
               <Text style={{ color: "#374151" }}>Private room</Text>
             </View>
             <View style={{ flexDirection: "row", gap: 8 }}>
@@ -252,7 +252,7 @@ export default function RoomsScreen() {
                 <Text style={styles.btnText}>Create</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: "#6b7280" }]}
+                style={[styles.btn, { backgroundColor: "#555" }]}
                 onPress={() => setShowCreate(false)}
               >
                 <Text style={styles.btnText}>Cancel</Text>
@@ -279,7 +279,7 @@ export default function RoomsScreen() {
                 <Text style={styles.btnText}>Join</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: "#6b7280" }]}
+                style={[styles.btn, { backgroundColor: "#555" }]}
                 onPress={() => {
                   setJoinModal(null);
                   setJoinKey("");
@@ -319,10 +319,10 @@ const styles = StyleSheet.create({
     borderColor: "#d1d5db",
   },
   tabActive: {
-    backgroundColor: "#4f46e5",
-    borderColor: "#4f46e5",
+    backgroundColor: "#000",
+    borderColor: "#000",
   },
-  tabText: { fontSize: 13, color: "#6b7280" },
+  tabText: { fontSize: 13, color: "#555" },
   tabTextActive: { color: "#fff" },
   roomCard: {
     backgroundColor: "#fff",
@@ -339,11 +339,11 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   roomName: { fontWeight: "600", fontSize: 15, color: "#111827" },
-  roomDesc: { fontSize: 13, color: "#6b7280", marginTop: 2 },
+  roomDesc: { fontSize: 13, color: "#555", marginTop: 2 },
   badgePrivate: {
     fontSize: 10,
-    backgroundColor: "#fef3c7",
-    color: "#a16207",
+    backgroundColor: "#f3f4f6",
+    color: "#555",
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
@@ -351,15 +351,15 @@ const styles = StyleSheet.create({
   },
   badgeInactive: {
     fontSize: 10,
-    backgroundColor: "#fee2e2",
-    color: "#dc2626",
+    backgroundColor: "#f3f4f6",
+    color: "#333",
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
     overflow: "hidden",
   },
   btn: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: "#000",
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,

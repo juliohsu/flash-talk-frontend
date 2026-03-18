@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,9 @@ import {
   Platform,
   Modal,
   Clipboard,
+  Pressable,
+  AppState,
+  AppStateStatus,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { rooms, messages, Room, Message } from "@/lib/api";
@@ -34,19 +37,92 @@ export default function ChatRoomScreen() {
   const [members, setMembers] = useState<Member[]>([]);
   const [newMsg, setNewMsg] = useState("");
   const [userId, setUserId] = useState<number | null>(null);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editContent, setEditContent] = useState("");
   const [typingUsers, setTypingUsers] = useState<number[]>([]);
   const [showMembers, setShowMembers] = useState(false);
   const [inviteKey, setInviteKey] = useState("");
   const [showInvite, setShowInvite] = useState(false);
 
+  // Three-dot menu state
+  const [menuMsgId, setMenuMsgId] = useState<number | null>(null);
+
+  // Edit modal state
+  const [editModalMsg, setEditModalMsg] = useState<Message | null>(null);
+  const [editContent, setEditContent] = useState("");
+
+  // Delete confirmation modal state
+  const [deleteMsgId, setDeleteMsgId] = useState<number | null>(null);
+
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const mountedRef = useRef(true);
 
+  // Reload messages from API (used on reconnect and app foreground)
+  const reloadMessages = useCallback(async () => {
+    try {
+      const res = await messages.listByRoom(roomId, { limit: "100", order: "ASC" });
+      if (mountedRef.current) setMsgList(res.data);
+    } catch {
+      // silent fail on reload
+    }
+  }, [roomId]);
+
+  // Setup socket listeners
+  const setupSocketListeners = useCallback((socket: Socket) => {
+    // Remove old listeners to avoid duplicates
+    socket.off("new-message");
+    socket.off("user-typing");
+    socket.off("user-joined");
+    socket.off("user-left");
+    socket.off("messages-status-updated");
+    socket.off("connect");
+    socket.off("reconnect");
+
+    socket.on("new-message", (msg: Message) => {
+      if (mountedRef.current) {
+        setMsgList((prev) => {
+          // Deduplicate by id
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+        socket.emit("messages-delivered", { roomId });
+      }
+    });
+
+    socket.on("user-typing", ({ userId: uid, isTyping }: { userId: number; isTyping: boolean }) => {
+      if (mountedRef.current) {
+        setTypingUsers((prev) =>
+          isTyping ? [...prev.filter((x) => x !== uid), uid] : prev.filter((x) => x !== uid)
+        );
+      }
+    });
+
+    socket.on("user-joined", async () => {
+      const res = await rooms.members(roomId);
+      if (mountedRef.current) setMembers(res.members);
+    });
+
+    socket.on("user-left", async () => {
+      const res = await rooms.members(roomId);
+      if (mountedRef.current) setMembers(res.members);
+    });
+
+    socket.on("messages-status-updated", async () => {
+      await reloadMessages();
+    });
+
+    // On reconnect: re-join room and reload messages to catch anything missed
+    socket.on("connect", () => {
+      console.log("[socket] connected/reconnected, re-joining room", roomId);
+      socket.emit("join-room", roomId);
+      socket.emit("messages-read", { roomId });
+      reloadMessages();
+    });
+  }, [roomId, reloadMessages]);
+
+  // Main init effect
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
 
     async function init() {
       const user = await getCurrentUser();
@@ -54,16 +130,15 @@ export default function ChatRoomScreen() {
         router.replace("/login");
         return;
       }
-      if (mounted) setUserId(user.id);
+      if (mountedRef.current) setUserId(user.id);
 
-      // Load data
       try {
         const [roomData, msgData, memberData] = await Promise.all([
           rooms.get(roomId),
           messages.listByRoom(roomId, { limit: "100", order: "ASC" }),
           rooms.members(roomId),
         ]);
-        if (mounted) {
+        if (mountedRef.current) {
           setRoom(roomData);
           setMsgList(msgData.data);
           setMembers(memberData.members);
@@ -72,47 +147,21 @@ export default function ChatRoomScreen() {
         Alert.alert("Error", "Failed to load room");
       }
 
-      // Socket
       const socket = await connectSocket();
       socketRef.current = socket;
-      socket.emit("join-room", roomId);
-      socket.emit("messages-read", { roomId });
+      setupSocketListeners(socket);
 
-      socket.on("new-message", (msg: Message) => {
-        if (mounted) {
-          setMsgList((prev) => [...prev, msg]);
-          socket.emit("messages-delivered", { roomId });
-        }
-      });
-
-      socket.on("user-typing", ({ userId: uid, isTyping }: { userId: number; isTyping: boolean }) => {
-        if (mounted) {
-          setTypingUsers((prev) =>
-            isTyping ? [...prev.filter((x) => x !== uid), uid] : prev.filter((x) => x !== uid)
-          );
-        }
-      });
-
-      socket.on("user-joined", async () => {
-        const res = await rooms.members(roomId);
-        if (mounted) setMembers(res.members);
-      });
-
-      socket.on("user-left", async () => {
-        const res = await rooms.members(roomId);
-        if (mounted) setMembers(res.members);
-      });
-
-      socket.on("messages-status-updated", async () => {
-        const res = await messages.listByRoom(roomId, { limit: "100", order: "ASC" });
-        if (mounted) setMsgList(res.data);
-      });
+      // If already connected, join immediately; otherwise the "connect" listener handles it
+      if (socket.connected) {
+        socket.emit("join-room", roomId);
+        socket.emit("messages-read", { roomId });
+      }
     }
 
     init();
 
     return () => {
-      mounted = false;
+      mountedRef.current = false;
       if (socketRef.current) {
         socketRef.current.emit("leave-room", roomId);
         socketRef.current.off("new-message");
@@ -120,10 +169,32 @@ export default function ChatRoomScreen() {
         socketRef.current.off("user-joined");
         socketRef.current.off("user-left");
         socketRef.current.off("messages-status-updated");
+        socketRef.current.off("connect");
+        socketRef.current.off("reconnect");
       }
     };
-  }, [roomId, router]);
+  }, [roomId, router, setupSocketListeners]);
 
+  // Handle app going to background/foreground
+  useEffect(() => {
+    function handleAppState(nextState: AppStateStatus) {
+      if (nextState === "active" && socketRef.current) {
+        // App came back to foreground — reconnect socket if needed and reload messages
+        if (socketRef.current.disconnected) {
+          socketRef.current.connect();
+        } else {
+          // Already connected, just reload to catch missed messages
+          socketRef.current.emit("join-room", roomId);
+          reloadMessages();
+        }
+      }
+    }
+
+    const subscription = AppState.addEventListener("change", handleAppState);
+    return () => subscription.remove();
+  }, [roomId, reloadMessages]);
+
+  // Scroll to bottom on new messages
   useEffect(() => {
     if (msgList.length > 0) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
@@ -141,21 +212,27 @@ export default function ChatRoomScreen() {
   }
 
   async function handleSend() {
-    if (!newMsg.trim()) return;
-    try {
-      await messages.create({ content: newMsg, roomId });
-      setNewMsg("");
-      socketRef.current?.emit("typing", { roomId, isTyping: false });
-    } catch (err: unknown) {
-      Alert.alert("Error", err instanceof Error ? err.message : "Failed to send");
-    }
+    if (!newMsg.trim() || !socketRef.current) return;
+    const content = newMsg.trim();
+    setNewMsg("");
+    socketRef.current.emit("typing", { roomId, isTyping: false });
+
+    // Use callback acknowledgment so the sender always gets the saved message
+    socketRef.current.emit("send-message", { roomId, content }, (savedMsg: Message) => {
+      if (savedMsg && mountedRef.current) {
+        setMsgList((prev) => {
+          if (prev.some((m) => m.id === savedMsg.id)) return prev;
+          return [...prev, savedMsg];
+        });
+      }
+    });
   }
 
-  async function handleEdit(msgId: number) {
-    if (!editContent.trim()) return;
+  async function handleEditSave() {
+    if (!editContent.trim() || !editModalMsg) return;
     try {
-      await messages.update(msgId, editContent);
-      setEditingId(null);
+      await messages.update(editModalMsg.id, editContent);
+      setEditModalMsg(null);
       setEditContent("");
       const res = await messages.listByRoom(roomId, { limit: "100", order: "ASC" });
       setMsgList(res.data);
@@ -164,22 +241,16 @@ export default function ChatRoomScreen() {
     }
   }
 
-  async function handleDeleteMsg(msgId: number) {
-    Alert.alert("Delete Message", "Are you sure?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await messages.delete(msgId);
-            setMsgList((prev) => prev.filter((m) => m.id !== msgId));
-          } catch (err: unknown) {
-            Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete");
-          }
-        },
-      },
-    ]);
+  async function handleDeleteConfirm() {
+    if (!deleteMsgId) return;
+    try {
+      await messages.delete(deleteMsgId);
+      setMsgList((prev) => prev.filter((m) => m.id !== deleteMsgId));
+    } catch (err: unknown) {
+      Alert.alert("Error", err instanceof Error ? err.message : "Failed to delete");
+    } finally {
+      setDeleteMsgId(null);
+    }
   }
 
   async function handleLeave() {
@@ -227,62 +298,72 @@ export default function ChatRoomScreen() {
 
   function renderMessage({ item: msg }: { item: Message }) {
     const isMine = msg.userId === userId;
+    const showMenu = menuMsgId === msg.id;
 
     return (
       <View style={[styles.msgRow, isMine ? styles.msgRowRight : styles.msgRowLeft]}>
-        <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleOther]}>
-          {!isMine && (
-            <Text style={styles.msgAuthor}>
-              {memberMap.get(msg.userId) || msg.User?.name || `User #${msg.userId}`}
-            </Text>
+        {/* Three-dot button + bubble row */}
+        <View style={{ flexDirection: "row", alignItems: "flex-start", maxWidth: "82%" }}>
+          {/* Three-dot on the left for own messages */}
+          {isMine && (
+            <TouchableOpacity
+              style={styles.dotBtn}
+              onPress={() => setMenuMsgId(showMenu ? null : msg.id)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.dotIcon}>...</Text>
+            </TouchableOpacity>
           )}
-          {editingId === msg.id ? (
-            <View>
-              <TextInput
-                style={styles.editInput}
-                value={editContent}
-                onChangeText={setEditContent}
-                autoFocus
-                onSubmitEditing={() => handleEdit(msg.id)}
-              />
-              <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
-                <TouchableOpacity onPress={() => handleEdit(msg.id)}>
-                  <Text style={{ color: isMine ? "#c7d2fe" : "#4f46e5", fontSize: 12 }}>Save</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setEditingId(null)}>
-                  <Text style={{ color: isMine ? "#c7d2fe" : "#6b7280", fontSize: 12 }}>Cancel</Text>
-                </TouchableOpacity>
+
+          <View style={{ position: "relative", flexShrink: 1 }}>
+            <View style={[styles.bubble, isMine ? styles.bubbleMine : styles.bubbleOther]}>
+              {!isMine && (
+                <Text style={styles.msgAuthor}>
+                  {memberMap.get(msg.userId) || msg.User?.name || `User #${msg.userId}`}
+                </Text>
+              )}
+              <Text style={[styles.msgText, isMine && { color: "#fff" }]}>{msg.content}</Text>
+              <View style={styles.msgMeta}>
+                <Text style={[styles.msgTime, isMine && { color: "rgba(255,255,255,0.6)" }]}>
+                  {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </Text>
+                {msg.isEdited && (
+                  <Text style={[styles.msgTime, isMine && { color: "rgba(255,255,255,0.6)" }]}>(edited)</Text>
+                )}
+                {isMine && (
+                  <Text style={[styles.msgTime, { color: "rgba(255,255,255,0.6)" }]}>{msg.status}</Text>
+                )}
               </View>
             </View>
-          ) : (
-            <Text style={[styles.msgText, isMine && { color: "#fff" }]}>{msg.content}</Text>
-          )}
-          <View style={styles.msgMeta}>
-            <Text style={[styles.msgTime, isMine && { color: "#c7d2fe" }]}>
-              {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </Text>
-            {msg.isEdited && (
-              <Text style={[styles.msgTime, isMine && { color: "#c7d2fe" }]}>(edited)</Text>
-            )}
-            {isMine && (
-              <Text style={[styles.msgTime, { color: "#c7d2fe" }]}>{msg.status}</Text>
+
+            {/* Dropdown menu */}
+            {showMenu && isMine && (
+              <View style={[styles.menuDropdown, isMine ? styles.menuDropdownRight : styles.menuDropdownLeft]}>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setMenuMsgId(null);
+                    setEditContent(msg.content);
+                    setEditModalMsg(msg);
+                  }}
+                >
+                  <Text style={styles.menuItemText}>Edit</Text>
+                </TouchableOpacity>
+                <View style={styles.menuDivider} />
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setMenuMsgId(null);
+                    setDeleteMsgId(msg.id);
+                  }}
+                >
+                  <Text style={[styles.menuItemText, { color: "#333" }]}>Delete</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
-          {isMine && editingId !== msg.id && (
-            <View style={{ flexDirection: "row", gap: 12, marginTop: 4 }}>
-              <TouchableOpacity
-                onPress={() => {
-                  setEditingId(msg.id);
-                  setEditContent(msg.content);
-                }}
-              >
-                <Text style={{ color: "#c7d2fe", fontSize: 11 }}>edit</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => handleDeleteMsg(msg.id)}>
-                <Text style={{ color: "#c7d2fe", fontSize: 11 }}>delete</Text>
-              </TouchableOpacity>
-            </View>
-          )}
+
+          {/* Three-dot on the right for other's messages — not shown since they can't edit/delete */}
         </View>
       </View>
     );
@@ -305,35 +386,37 @@ export default function ChatRoomScreen() {
         </View>
         <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
           <TouchableOpacity onPress={() => setShowMembers(true)}>
-            <Text style={{ color: "#4f46e5", fontSize: 13, fontWeight: "600" }}>
+            <Text style={{ color: "#000", fontSize: 13, fontWeight: "600" }}>
               Members ({members.length})
             </Text>
           </TouchableOpacity>
           {isOwner && room?.isPrivate && (
             <TouchableOpacity onPress={handleShowInvite}>
-              <Text style={{ color: "#a16207", fontSize: 13, fontWeight: "600" }}>Invite</Text>
+              <Text style={{ color: "#555", fontSize: 13, fontWeight: "600" }}>Invite</Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity onPress={handleLeave}>
-            <Text style={{ color: "#ef4444", fontSize: 13, fontWeight: "600" }}>Leave</Text>
+            <Text style={{ color: "#333", fontSize: 13, fontWeight: "600" }}>Leave</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Messages */}
-      <FlatList
-        ref={flatListRef}
-        data={msgList}
-        keyExtractor={(m) => m.id.toString()}
-        renderItem={renderMessage}
-        contentContainerStyle={{ padding: 12, paddingBottom: 4 }}
-        ListEmptyComponent={
-          <Text style={{ textAlign: "center", color: "#9ca3af", marginTop: 60 }}>
-            No messages yet. Start the conversation!
-          </Text>
-        }
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-      />
+      {/* Dismiss menu when tapping elsewhere */}
+      <Pressable style={{ flex: 1 }} onPress={() => menuMsgId && setMenuMsgId(null)}>
+        <FlatList
+          ref={flatListRef}
+          data={msgList}
+          keyExtractor={(m) => m.id.toString()}
+          renderItem={renderMessage}
+          contentContainerStyle={{ padding: 12, paddingBottom: 4 }}
+          ListEmptyComponent={
+            <Text style={{ textAlign: "center", color: "#9ca3af", marginTop: 60 }}>
+              No messages yet. Start the conversation!
+            </Text>
+          }
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+        />
+      </Pressable>
 
       {/* Typing indicator */}
       {otherTyping.length > 0 && (
@@ -366,6 +449,68 @@ export default function ChatRoomScreen() {
           <Text style={{ color: "#fff", fontWeight: "bold" }}>Send</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Edit Message Modal */}
+      <Modal visible={editModalMsg !== null} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Edit Message</Text>
+            <TextInput
+              style={styles.editModalInput}
+              value={editContent}
+              onChangeText={setEditContent}
+              autoFocus
+              multiline
+              placeholderTextColor="#9ca3af"
+              placeholder="Edit your message..."
+            />
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnOutline]}
+                onPress={() => {
+                  setEditModalMsg(null);
+                  setEditContent("");
+                }}
+              >
+                <Text style={styles.btnOutlineText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, !editContent.trim() && { opacity: 0.5 }]}
+                onPress={handleEditSave}
+                disabled={!editContent.trim()}
+              >
+                <Text style={styles.btnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal visible={deleteMsgId !== null} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Delete Message</Text>
+            <Text style={{ color: "#555", fontSize: 15, lineHeight: 22 }}>
+              Are you sure you want to delete this message? This action cannot be undone.
+            </Text>
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnOutline]}
+                onPress={() => setDeleteMsgId(null)}
+              >
+                <Text style={styles.btnOutlineText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnDanger]}
+                onPress={handleDeleteConfirm}
+              >
+                <Text style={styles.btnText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Members Modal */}
       <Modal visible={showMembers} animationType="slide" transparent>
@@ -411,16 +556,16 @@ export default function ChatRoomScreen() {
                 <Text style={styles.btnText}>Copy</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: "#a16207" }]}
+                style={[styles.btn, { backgroundColor: "#555" }]}
                 onPress={handleRegenerateKey}
               >
                 <Text style={styles.btnText}>Regenerate</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: "#6b7280" }]}
+                style={[styles.btn, styles.btnOutline]}
                 onPress={() => setShowInvite(false)}
               >
-                <Text style={styles.btnText}>Close</Text>
+                <Text style={styles.btnOutlineText}>Close</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -443,8 +588,8 @@ const styles = StyleSheet.create({
   },
   badgePrivate: {
     fontSize: 10,
-    backgroundColor: "#fef3c7",
-    color: "#a16207",
+    backgroundColor: "#f3f4f6",
+    color: "#555",
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
@@ -454,26 +599,72 @@ const styles = StyleSheet.create({
   msgRowRight: { alignItems: "flex-end" },
   msgRowLeft: { alignItems: "flex-start" },
   bubble: {
-    maxWidth: "78%",
+    maxWidth: "100%",
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
-  bubbleMine: { backgroundColor: "#4f46e5", borderBottomRightRadius: 4 },
+  bubbleMine: { backgroundColor: "#000", borderBottomRightRadius: 4 },
   bubbleOther: { backgroundColor: "#fff", borderBottomLeftRadius: 4, borderWidth: 1, borderColor: "#e5e7eb" },
-  msgAuthor: { fontSize: 11, fontWeight: "600", color: "#4f46e5", marginBottom: 2 },
+  msgAuthor: { fontSize: 11, fontWeight: "600", color: "#000", marginBottom: 2 },
   msgText: { fontSize: 15, color: "#111827" },
   msgMeta: { flexDirection: "row", gap: 6, marginTop: 4 },
   msgTime: { fontSize: 10, color: "#9ca3af" },
-  editInput: {
-    backgroundColor: "#fff",
-    borderRadius: 6,
-    paddingHorizontal: 8,
+  dotBtn: {
+    paddingHorizontal: 6,
     paddingVertical: 4,
+    marginRight: 4,
+    marginTop: 6,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  dotIcon: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#9ca3af",
+    letterSpacing: 1,
+  },
+  menuDropdown: {
+    position: "absolute",
+    top: -4,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    paddingVertical: 4,
+    minWidth: 100,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    zIndex: 100,
+  },
+  menuDropdownRight: { right: "100%", marginRight: 4 },
+  menuDropdownLeft: { left: "100%", marginLeft: 4 },
+  menuItem: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  menuItemText: {
     fontSize: 14,
+    fontWeight: "500",
     color: "#111827",
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: "#f3f4f6",
+  },
+  editModalInput: {
     borderWidth: 1,
     borderColor: "#d1d5db",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: "#111827",
+    minHeight: 80,
+    textAlignVertical: "top",
   },
   typingBar: {
     paddingHorizontal: 14,
@@ -501,18 +692,31 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
   sendBtn: {
-    backgroundColor: "#4f46e5",
+    backgroundColor: "#000",
     borderRadius: 20,
     paddingHorizontal: 18,
     justifyContent: "center",
   },
   btn: {
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    backgroundColor: "#000",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderRadius: 8,
   },
-  btnText: { color: "#fff", fontWeight: "600", fontSize: 13 },
+  btnOutline: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+  },
+  btnOutlineText: {
+    color: "#555",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  btnDanger: {
+    backgroundColor: "#333",
+  },
+  btnText: { color: "#fff", fontWeight: "600", fontSize: 14 },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -522,7 +726,7 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     backgroundColor: "#fff",
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 24,
     width: "100%",
     maxWidth: 400,
